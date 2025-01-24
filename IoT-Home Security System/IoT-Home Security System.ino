@@ -1,48 +1,49 @@
 /*
-  ESP32 publish telemetry data to VOne Cloud (Home Security System with PIR Sensor and Gas/Smoke Detection)
+  ESP32 publish telemetry data to V-One Cloud (Home Security System with PIR Sensor, Gas/Smoke Detection, and LED Control)
 */
 
 #include "VOneMqttClient.h"
 #include <Adafruit_NeoPixel.h>
+
+// Define constants
 #define NUMPIXELS 1
 #define DELAYVAL 500
+#define GAS_THRESHOLD 1000  // Gas detection threshold
 
-// Define device IDs
-const char* LEDLight = "c9f1e91c-03d5-4761-955d-984c08fa0501";      // LED
-const char* PIRsensor = "c8209e25-1416-456e-96c5-0f704c875ec8";     // PIR sensor
-const char* GasSensor = "21dc653d-cfc7-4491-a2ee-0c8e16eafaa9";     // Replace with your MQ2 sensor device ID
+// Define device IDs (Replace with your V-One device IDs)
+const char* LEDLight = "c9f1e91c-03d5-4761-955d-984c08fa0501"; // LED
+const char* PIRsensor = "c8209e25-1416-456e-96c5-0f704c875ec8"; // PIR sensor
+const char* GasSensor = "21dc653d-cfc7-4491-a2ee-0c8e16eafaa9"; // MQ2 sensor
 
-// Used Pins
-const int ledPin = 21;            // LED (Pin 21)
-const int motionSensor = 4;       // PIR sensor (Left Maker Port)
-const int neoPin = 46;            // Onboard Neopixel
-const int mq2Pin = A2;            // MQ2 sensor analog pin
+// Pin assignments
+const int ledPin = 21;       // LED Pin
+const int motionSensor = 4;  // PIR sensor pin
+const int mq2Pin = A2;       // MQ2 sensor analog pin
+const int neoPin = 46;       // Onboard NeoPixel pin
 
-// Input sensor variables
-unsigned long now = millis();
+// Timer variables for PIR sensor
 unsigned long lastTrigger = 0;
 boolean PIRvalue = false;
 
+// Create NeoPixel instance
 Adafruit_NeoPixel pixels(NUMPIXELS, neoPin, NEO_GRB + NEO_KHZ800);
 
-// Motion detection interrupt function
-void IRAM_ATTR detectsMovement() {
-  PIRvalue = true;
-  lastTrigger = millis();
-}
-
-// Create an instance of VOneMqttClient
+// Create V-One client instance
 VOneMqttClient voneClient;
 
 // Last message time
 unsigned long lastMsgTime = 0;
 
+// Motion detection interrupt handler
+void IRAM_ATTR detectsMovement() {
+  PIRvalue = true;
+  lastTrigger = millis();
+}
+
+// Wi-Fi setup function
 void setup_wifi() {
   delay(10);
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(WIFI_SSID);
-
+  Serial.println("\nConnecting to Wi-Fi...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -50,61 +51,48 @@ void setup_wifi() {
     delay(500);
     Serial.print(".");
   }
-
-  Serial.println("\nWiFi connected");
+  Serial.println("\nWi-Fi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 }
 
+// Callback function to control LED via V-One Cloud
 void triggerActuator_callback(const char* actuatorDeviceId, const char* actuatorCommand) {
   Serial.print("Main received callback : ");
   Serial.print(actuatorDeviceId);
   Serial.print(" : ");
   Serial.println(actuatorCommand);
 
-  String errorMsg = "";
-  JSONVar commandObjct = JSON.parse(actuatorCommand);
-  JSONVar keys = commandObjct.keys();
-
   if (String(actuatorDeviceId) == LEDLight) {
-    String key = "";
-    bool commandValue = "";
-    for (int i = 0; i < keys.length(); i++) {
-      key = (const char*)keys[i];
-      commandValue = (bool)commandObjct[keys[i]];
-      Serial.print("Key : ");
-      Serial.println(key.c_str());
-      Serial.print("value : ");
-      Serial.println(commandValue);
-    }
-
-    if (commandValue == true) {
-      Serial.println("LED ON");
-      digitalWrite(ledPin, true);
-    } else {
-      Serial.println("LED OFF");
-      digitalWrite(ledPin, false);
-    }
-
+    JSONVar commandObj = JSON.parse(actuatorCommand);
+    bool commandValue = (bool)commandObj["state"];
+    digitalWrite(ledPin, commandValue);
+    Serial.println(commandValue ? "LED ON" : "LED OFF");
     voneClient.publishActuatorStatusEvent(actuatorDeviceId, actuatorCommand, true);
   }
 }
 
+// Setup function
 void setup() {
+  Serial.begin(115200);
+
+  // Setup Wi-Fi and V-One client
   setup_wifi();
   voneClient.setup();
   voneClient.registerActuatorCallback(triggerActuator_callback);
 
-  // Sensor initialization
+  // Initialize components
   pinMode(ledPin, OUTPUT);
   pinMode(motionSensor, INPUT);
-  pinMode(mq2Pin, INPUT);
   digitalWrite(ledPin, LOW);
+  pixels.begin();
+  pixels.clear();
 
-  // Set motionSensor pin as interrupt
   attachInterrupt(digitalPinToInterrupt(motionSensor), detectsMovement, RISING);
+  Serial.println("System initialized");
 }
 
+// Main loop
 void loop() {
   if (!voneClient.connected()) {
     voneClient.reconnect();
@@ -113,45 +101,29 @@ void loop() {
   }
   voneClient.loop();
 
+  // Handle periodic telemetry updates
   unsigned long cur = millis();
-  if (cur - lastMsgTime > INTERVAL) {
+  if (cur - lastMsgTime > 1000) {  // Adjust the interval as needed
     lastMsgTime = cur;
 
-    // Publish telemetry data
-    int PIRvalue = digitalRead(motionSensor);
-    int ledValue = digitalRead(ledPin);
-    int gasValue = analogRead(mq2Pin);  // Read gas sensor value
+    // Read sensors
+    PIRvalue = digitalRead(motionSensor);
+    int gasValue = analogRead(mq2Pin);
 
-    if (ledValue == HIGH) {
-      for (int i = 0; i < NUMPIXELS; i++) {
-        pixels.setPixelColor(i, pixels.Color(0, 100, 0));
-        pixels.show();
-        delay(DELAYVAL);
-        pixels.setPixelColor(i, pixels.Color(100, 0, 0));
-        pixels.show();
-        delay(DELAYVAL);
-        pixels.setPixelColor(i, pixels.Color(0, 0, 100));
-        pixels.show();
-        delay(DELAYVAL);
-        pixels.setPixelColor(i, pixels.Color(0, 0, 0));
-        pixels.show();
-        delay(DELAYVAL);
-      }
-    } else {
-      pixels.clear();
-    }
-
+    // Publish telemetry data to V-One Cloud
     voneClient.publishTelemetryData(PIRsensor, "Motion", PIRvalue);
-    voneClient.publishTelemetryData(GasSensor, "GasLevel", gasValue);  // Publish gas level to VOne Cloud
+    voneClient.publishTelemetryData(GasSensor, "Gas detector", gasValue);
 
-    // Take action if gas value exceeds a threshold
-    if (gasValue > 2000) {  // Adjust threshold as needed
-      Serial.println("Warning: High gas/smoke detected!");
-      digitalWrite(ledPin, HIGH);  // Trigger LED or alarm
+    // Handle LED behavior based on sensor data
+    if (PIRvalue || gasValue > GAS_THRESHOLD) {
+      Serial.println("Warning: Motion or high gas/smoke detected!");
+      digitalWrite(ledPin, HIGH);  // Turn on LED
+      pixels.setPixelColor(0, pixels.Color(255, 0, 0)); // Red for alert
+      pixels.show();
     } else {
-      digitalWrite(ledPin, LOW);
+      digitalWrite(ledPin, LOW);  // Turn off LED
+      pixels.clear();
+      pixels.show();
     }
-
-    delay(1000);
   }
 }
